@@ -1,6 +1,8 @@
-# Autonomous Email Agent
+# Majordomo
 
-A fully autonomous AI agent that monitors a dedicated inbox and replies to emails without human intervention.
+> *noun* — a person who manages a great household on behalf of their employer. In this case, the household is your inbox, the employer is you, and the employee never sleeps, never complains, and never accidentally replies-all.
+
+Majordomo is a fully autonomous AI agent that monitors a dedicated inbox and replies to emails without human intervention. You set a persona, point it at a mailbox, and walk away. It handles everything else — including the emails you were never going to answer anyway.
 
 ## Architecture
 
@@ -8,7 +10,7 @@ A fully autonomous AI agent that monitors a dedicated inbox and replies to email
 IMAP poll → triage (LLM) → generate reply (LLM) → send via SMTP
 ```
 
-Uses **LangGraph** for the agent loop and **Claude** as the LLM.
+Uses **LangGraph** for the agent loop and **Claude** as the LLM. No database. No UI. No drama.
 
 ## Setup
 
@@ -42,21 +44,17 @@ export POLL_INTERVAL_SECONDS="60"
 python agent.py
 ```
 
+Majordomo will now handle your correspondence. You may go touch grass.
+
 ## How it works
 
 1. **Poll** — checks for UNSEEN emails every N seconds via IMAP
-2. **Triage** — LLM decides if the email deserves a reply (filters spam, auto-replies, newsletters)
-3. **Generate** — LLM writes a reply using your persona and system prompt
-4. **Send** — sends via SMTP and marks the original as Seen
+2. **Triage** — decides if the email warrants a reply (filters spam, auto-replies, newsletters, and the guy who keeps emailing about his invoice)
+3. **Generate** — writes a reply in your persona and tone
+4. **Send** — sends via SMTP and marks the original as Seen, as if it were never a problem
 
-## Comparison with Inbox Zero
+## Compared to the fancy alternatives
 
-[Inbox Zero](https://github.com/elie222/inbox-zero) is a full-featured web product aimed at keeping a human in the loop — it drafts replies, organises labels, tracks follow-ups, and blocks cold emails, but you still decide what gets sent. This agent takes the opposite stance: it is fully autonomous and sends replies without any human approval.
+**[Inbox Zero](https://github.com/elie222/inbox-zero)** is a full web product that keeps you in the loop — it drafts, you approve. Very sensible. Majordomo does not ask for your approval. Majordomo has already replied.
 
-## Extending
-
-- **Memory**: store past threads in SQLite and pass them as context
-- **Tools**: give the agent tools (calendar booking, CRM lookup, ticket creation)
-- **Webhooks**: replace polling with Gmail Push Notifications or SendGrid Inbound Parse for real-time processing
-- **Human-in-the-loop**: add an approval step that posts to Slack before sending
-- **Multiple personas**: run multiple instances with different configs for different inboxes
+**[Zero (Mail-0)](https://github.com/Mail-0/Zero)** is a beautiful open-source email client — a better Gmail, basically. You still sit there and read things. Majordomo thinks that sounds exhausting.
