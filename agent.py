@@ -40,7 +40,7 @@ def load_config(path: str) -> None:
     spec.loader.exec_module(module)
     Config = module.Config
     llm = ChatOpenAI(
-        model="x-ai/grok-4-fast",
+        model=Config.LLM_MODEL,
         api_key=Config.ANTHROPIC_AUTH_TOKEN,
         base_url=Config.ANTHROPIC_BASE_URL + "/v1" if Config.ANTHROPIC_BASE_URL else None,
     )

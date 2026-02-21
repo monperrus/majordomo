@@ -1,7 +1,7 @@
 """
-Configuration for the autonomous email agent.
-Copy this to config.py and fill in your values.
-Or set environment variables and load with python-dotenv.
+Majordomo configuration.
+Copy this file to config.py and fill in your values,
+or set the equivalent environment variables.
 """
 
 import os
@@ -20,9 +20,10 @@ class Config:
     SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 
-    # LLM
-    ANTHROPIC_AUTH_TOKEN  = os.getenv("ANTHROPIC_AUTH_TOKEN", "your-auth-token")
-    ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://your-proxy.example.com")
+    # LLM — any OpenAI-compatible endpoint (OpenRouter, OpenAI, local proxy, …)
+    ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_AUTH_TOKEN", "your-api-key")
+    ANTHROPIC_BASE_URL   = os.getenv("ANTHROPIC_BASE_URL", "https://openrouter.ai")  # e.g. https://api.openai.com
+    LLM_MODEL            = os.getenv("LLM_MODEL", "x-ai/grok-4-fast")               # any model available on the endpoint
 
     # Agent identity
     AGENT_NAME    = os.getenv("AGENT_NAME", "Alex")
