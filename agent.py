@@ -14,6 +14,8 @@ import ssl
 import time
 import uuid
 import logging
+import argparse
+import importlib.util
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
@@ -21,10 +23,28 @@ from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
-from config import Config
 
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
+
+# Config and llm are initialised by load_config() before run() is called.
+Config = None
+llm = None
+
+
+def load_config(path: str) -> None:
+    """Load a config file by path and initialise Config + llm."""
+    global Config, llm
+    spec = importlib.util.spec_from_file_location("config", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    Config = module.Config
+    llm = ChatOpenAI(
+        model="x-ai/grok-4-fast",
+        api_key=Config.ANTHROPIC_AUTH_TOKEN,
+        base_url=Config.ANTHROPIC_BASE_URL + "/v1" if Config.ANTHROPIC_BASE_URL else None,
+    )
+    log.info(f"Loaded config from {path}")
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
@@ -41,15 +61,6 @@ class EmailState(TypedDict):
     should_reply: bool
     reply_body: str
     error: str
-
-
-# ── LLM ───────────────────────────────────────────────────────────────────────
-
-llm = ChatOpenAI(
-    model="x-ai/grok-4-fast",
-    api_key=Config.ANTHROPIC_AUTH_TOKEN,
-    base_url=Config.ANTHROPIC_BASE_URL + "/v1" if Config.ANTHROPIC_BASE_URL else None,
-)
 
 
 # ── Graph Nodes ───────────────────────────────────────────────────────────────
@@ -385,4 +396,12 @@ def run():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Majordomo autonomous email agent")
+    parser.add_argument(
+        "--config",
+        default="config.py",
+        help="Path to config file (default: config.py)",
+    )
+    args = parser.parse_args()
+    load_config(args.config)
     run()
