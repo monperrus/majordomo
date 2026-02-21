@@ -16,6 +16,8 @@ import uuid
 import logging
 import argparse
 import importlib.util
+import json
+import urllib.request
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
@@ -63,6 +65,82 @@ class EmailState(TypedDict):
     error: str
 
 
+# ── Document Context ─────────────────────────────────────────────────────────
+
+def fetch_document_context(subject: str, body: str) -> str:
+    """
+    If Config.DOCUMENTS is defined, ask the LLM which documents are relevant to
+    this email, fetch their URLs, and return the combined content as a string
+    ready to be injected into the reply prompt.
+
+    Config.DOCUMENTS format:
+        [{"name":"<short-name>", "description": "<human-readable description>", "url": "<url>"}]
+    """
+    documents = getattr(Config, "DOCUMENTS", None)
+    if not documents or len(documents) == 0:
+        log.debug("[docs] No documents configured, skipping.")
+        return ""
+
+    descriptions_list = json.dumps(documents)
+    log.debug(f"[docs] Selecting from {len(documents)} document(s) for subject={subject!r}")
+    selector_prompt = (
+        f"You are a document relevance selector.\n"
+        f"An email agent received the following email:\n"
+        f"SUBJECT: {subject}\n"
+        f"BODY:\n{body}\n\n"
+        f"Available reference documents:\n{descriptions_list}\n\n"
+        f"Return ONLY a JSON array of document names for the documents "
+        f"that would help answer this email. Return an empty array [] if none are relevant. "
+        f"Example: [\"doc1\", \"doc3\"]"
+    )
+    try:
+        selection_result = llm.invoke([
+            SystemMessage(content="You select relevant reference documents for an email agent. Output only valid JSON."),
+            HumanMessage(content=selector_prompt),
+        ])
+        raw = selection_result.content.strip()
+        log.debug(f"[docs] Selector LLM raw response: {raw!r}")
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```[^\n]*\n?(.*?)```$", r"\1", raw, flags=re.DOTALL).strip()
+        selected_indices = json.loads(raw)
+        if not isinstance(selected_indices, list):
+            log.debug(f"[docs] Selector returned non-list: {selected_indices!r}, ignoring.")
+            selected_indices = []
+    except Exception as e:
+        log.warning(f"Document selector LLM call failed: {e}")
+        return ""
+
+    log.debug(f"[docs] Selected indices/names: {selected_indices}")
+    if not selected_indices:
+        log.debug("[docs] No relevant documents selected.")
+        return ""
+
+    fetched_sections = []
+    for doc_name in selected_indices:
+        doc = next((d for d in documents if d["name"] == doc_name), None)
+        if not doc:
+            log.debug(f"[docs] No document found with name: {doc_name!r}")
+            continue
+        url = doc["url"]
+        description = doc["description"]
+        log.debug(f"[docs] Fetching '{description}' from {url}")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Majordomo-Agent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            log.info(f"[docs] Fetched '{description}' from {url} ({len(content)} chars)")
+            fetched_sections.append(f"--- Reference: {description} ({url}) ---\n{content}")
+        except Exception as e:
+            log.warning(f"[docs] Failed to fetch '{description}' from {url}: {e}")
+
+    if not fetched_sections:
+        log.debug("[docs] All fetches failed or returned nothing.")
+        return ""
+
+    log.debug(f"[docs] Returning {len(fetched_sections)} document section(s).")
+    return "\n\n".join(fetched_sections)
+
+
 # ── Graph Nodes ───────────────────────────────────────────────────────────────
 
 def triage(state: EmailState) -> EmailState:
@@ -81,9 +159,14 @@ def generate_reply(state: EmailState) -> EmailState:
     if state["thread_history"]:
         thread_section = f"\nPrevious thread context:\n{state['thread_history']}\n"
 
+    doc_context = fetch_document_context(state["subject"], state["body"])
+    doc_section = ""
+    if doc_context:
+        doc_section = f"\nRelevant reference documents:\n{doc_context}\n"
+
     prompt = f"""
 {thread_section}
-
+{doc_section}
 You received this email:
 FROM: {state['sender']}
 SUBJECT: {state['subject']}
@@ -389,7 +472,6 @@ def run():
                 agent.invoke(state)
 
         except Exception as e:
-            raise e
             log.error(f"Poll error: {e}")
 
         time.sleep(Config.POLL_INTERVAL_SECONDS)
