@@ -14,12 +14,18 @@ Uses **LangGraph** for the agent loop and **Claude** as the LLM. No database. No
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Create a virtual environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure
+### 3. Configure
 Copy `config.py.template` and fill in your values, or set environment variables:
 
 ```bash
@@ -34,12 +40,12 @@ export AGENT_PERSONA="a helpful assistant for Acme Corp..."
 export POLL_INTERVAL_SECONDS="60"
 ```
 
-### 3. Gmail setup (if using Gmail)
+### 4. Gmail setup (if using Gmail)
 - Create a dedicated Gmail account for the agent
 - Enable 2FA and generate an **App Password**
 - Use the App Password as `EMAIL_PASSWORD`
 
-### 4. Run
+### 5. Run
 ```bash
 python agent.py
 ```
