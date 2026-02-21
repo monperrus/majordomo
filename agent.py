@@ -6,10 +6,13 @@ Autonomous Email Agent
 """
 
 import imaplib
+import re
 import smtplib
 import email
+import email.utils
 import ssl
 import time
+import uuid
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -20,7 +23,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from config import Config
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
 
@@ -31,6 +34,8 @@ class EmailState(TypedDict):
     sender: str
     subject: str
     body: str
+    message_id: str       # Message-ID of the incoming email
+    references: str       # References header of the incoming email (space-separated IDs)
     thread_history: str
     is_auto_reply: bool
     should_reply: bool
@@ -78,6 +83,8 @@ Write a helpful, professional reply. Be concise. Do not use filler phrases like
 "I hope this email finds you well." Sign off as: {Config.AGENT_NAME}
 
 Write only the email body, no subject line."""
+    
+    print(prompt)
 
     result = llm.invoke([
         SystemMessage(content=Config.AGENT_PERSONA),
@@ -88,23 +95,46 @@ Write only the email body, no subject line."""
 
 
 def send_reply(state: EmailState) -> EmailState:
-    """Send the generated reply via SMTP."""
+    """Send the generated reply via SMTP and copy it to the sent folder via IMAP."""
     if not state["should_reply"] or not state["reply_body"]:
         return state
 
     try:
         msg = MIMEMultipart()
+        msg["Message-ID"] = email.utils.make_msgid(domain=Config.SMTP_HOST)
+        msg["Date"] = email.utils.formatdate(localtime=True)
         msg["From"] = Config.EMAIL_ADDRESS
         msg["To"] = state["sender"]
         msg["Subject"] = f"Re: {state['subject']}"
         msg["Auto-Submitted"] = "auto-replied"
+        # Thread headers: link this reply into the conversation chain
+        if state["message_id"]:
+            msg["In-Reply-To"] = state["message_id"]
+            # References = existing chain + the message we're replying to
+            prior_refs = state["references"].strip() if state["references"] else ""
+            new_refs = (prior_refs + " " + state["message_id"]).strip()
+            msg["References"] = new_refs
         msg.attach(MIMEText(state["reply_body"], "plain"))
+        raw = msg.as_bytes()
 
         with smtplib.SMTP_SSL(Config.SMTP_HOST, Config.SMTP_PORT) as server:
             server.login(Config.EMAIL_ADDRESS, Config.EMAIL_PASSWORD)
-            server.sendmail(Config.EMAIL_ADDRESS, state["sender"], msg.as_string())
+            server.sendmail(Config.EMAIL_ADDRESS, state["sender"], raw)
 
         log.info(f"Replied to {state['sender']} re: '{state['subject']}'")
+
+        # Copy to sent folder if one was detected at startup
+        if len(_folders_to_search) > 1:
+            sent_folder = _folders_to_search[1]
+            try:
+                ctx = ssl.create_default_context()
+                with imaplib.IMAP4_SSL(Config.IMAP_HOST, Config.IMAP_PORT, ssl_context=ctx) as imap:
+                    imap.login(Config.EMAIL_ADDRESS, Config.EMAIL_PASSWORD)
+                    imap.append(sent_folder, "\\Seen", imaplib.Time2Internaldate(time.time()), raw)
+                log.info(f"Copied reply to {sent_folder}")
+            except Exception as e:
+                log.warning(f"Failed to copy reply to sent folder: {e}")
+
     except Exception as e:
         state["error"] = str(e)
         log.error(f"Failed to send reply: {e}")
@@ -180,6 +210,115 @@ def is_auto_reply_email(msg) -> bool:
     return False
 
 
+# Common sent-folder candidates to probe at startup
+_SENT_FOLDER_CANDIDATES = ["Sent", "Sent Items", "Sent Messages", "[Gmail]/Sent Mail", "INBOX.Sent", "SENT"]
+
+# Resolved at startup; populated by detect_folders()
+_folders_to_search: list[str] = ["INBOX"]
+
+
+def detect_folders(imap) -> None:
+    """Probe the server once to find which sent folder exists and cache it."""
+    global _folders_to_search
+    for candidate in _SENT_FOLDER_CANDIDATES:
+        try:
+            status, _ = imap.select(candidate, readonly=True)
+            if status == "OK":
+                log.info(f"Sent folder detected: {candidate}")
+                _folders_to_search = ["INBOX", candidate]
+                imap.select("INBOX")
+                return
+        except Exception:
+            continue
+    log.warning("No sent folder detected; thread history will only search INBOX.")
+    _folders_to_search = ["INBOX"]
+
+
+def fetch_thread_history(imap, msg, max_messages: int = 10, max_body_chars: int = 800) -> str:
+    """
+    Reconstruct the full conversation thread by following References + In-Reply-To
+    headers recursively, so the original message is always included.
+    """
+    # Collect all IDs to look up: References chain + In-Reply-To
+    references = msg.get("References", "") or ""
+    in_reply_to = msg.get("In-Reply-To", "") or ""
+    log.debug(f"[thread] References: {references!r}")
+    log.debug(f"[thread] In-Reply-To: {in_reply_to!r}")
+
+    # Start with the explicitly listed references
+    all_refs = re.findall(r"<[^>]+>", references + " " + in_reply_to)
+    if not all_refs:
+        log.debug("[thread] No message-id references found; skipping thread fetch.")
+        return ""
+
+    # Deduplicate, keep order
+    seen_ids: set = set()
+    queue = [r for r in all_refs if not (r in seen_ids or seen_ids.add(r))]
+    log.debug(f"[thread] Folders to search: {_folders_to_search}")
+
+    history_msgs: list[tuple[str, str, str]] = []  # (date, from, body) for sorting
+
+    # BFS: fetch each referenced message; if it has further References, enqueue those too
+    processed: set = set()
+    while queue and len(history_msgs) < max_messages:
+        msg_id = queue.pop(0)
+        if msg_id in processed:
+            continue
+        processed.add(msg_id)
+
+        found = False
+        for folder in _folders_to_search:
+            try:
+                status, data = imap.select(folder, readonly=True)
+                log.debug(f"[thread] SELECT {folder!r} → {status}")
+                if status != "OK":
+                    continue
+                _, uids = imap.search(None, "HEADER", "Message-ID", msg_id.strip("<>"))
+                log.debug(f"[thread] SEARCH {msg_id!r} in {folder!r} → {uids}")
+                if not uids[0]:
+                    continue
+                uid = uids[0].split()[-1]
+                _, data = imap.fetch(uid, "(RFC822)")
+                raw = data[0][1]
+                prev = email.message_from_bytes(raw)
+                from_ = decode_str(prev["From"])
+                date_ = prev.get("Date", "")
+                body_ = (get_body(prev) or "")[:max_body_chars]
+                log.debug(f"[thread] Found {msg_id!r} from {from_!r} in {folder!r}")
+                history_msgs.append((date_, from_, body_))
+
+                # Enqueue any further ancestors this message references
+                prev_refs = re.findall(r"<[^>]+>", (prev.get("References") or "") + " " + (prev.get("In-Reply-To") or ""))
+                for ref in prev_refs:
+                    if ref not in seen_ids:
+                        seen_ids.add(ref)
+                        queue.append(ref)
+
+                found = True
+                break
+            except Exception as exc:
+                log.debug(f"[thread] Error searching {folder!r} for {msg_id!r}: {exc}")
+                continue
+        if not found:
+            log.debug(f"[thread] {msg_id!r} not found in any folder.")
+
+    # Restore INBOX for the caller
+    imap.select("INBOX")
+
+    # Sort by Date ascending so the prompt reads oldest → newest
+    def _parse_date(d):
+        try:
+            return email.utils.parsedate_to_datetime(d)
+        except Exception:
+            return None
+
+    history_msgs.sort(key=lambda t: (_parse_date(t[0]) is None, _parse_date(t[0])))
+
+    parts = [f"--- From: {f} | Date: {d}\n{b}" for d, f, b in history_msgs]
+    log.debug(f"[thread] Returning {len(parts)} historical message(s).")
+    return "\n\n".join(parts)
+
+
 def fetch_unseen_emails(imap):
     imap.select("INBOX")
     _, uids = imap.search(None, "UNSEEN")
@@ -188,12 +327,17 @@ def fetch_unseen_emails(imap):
         _, data = imap.fetch(uid, "(RFC822)")
         raw = data[0][1]
         msg = email.message_from_bytes(raw)
+        thread_history = fetch_thread_history(imap, msg)
+        incoming_msg_id = (msg.get("Message-ID") or "").strip()
+        incoming_refs   = (msg.get("References") or "").strip()
         emails.append({
             "uid": uid.decode(),
             "sender": decode_str(msg["From"]),
             "subject": decode_str(msg["Subject"]),
             "body": get_body(msg),
-            "thread_history": "",  # extend here with thread lookup if needed
+            "message_id": incoming_msg_id,
+            "references": incoming_refs,
+            "thread_history": thread_history,
             "is_auto_reply": is_auto_reply_email(msg),
         })
         # Mark as seen
@@ -205,6 +349,10 @@ def fetch_unseen_emails(imap):
 
 def run():
     log.info(f"Agent starting. Monitoring {Config.EMAIL_ADDRESS}")
+    ctx = ssl.create_default_context()
+    with imaplib.IMAP4_SSL(Config.IMAP_HOST, Config.IMAP_PORT, ssl_context=ctx) as imap:
+        imap.login(Config.EMAIL_ADDRESS, Config.EMAIL_PASSWORD)
+        detect_folders(imap)
     while True:
         try:
             ctx = ssl.create_default_context()
@@ -219,6 +367,8 @@ def run():
                     "sender": e["sender"],
                     "subject": e["subject"],
                     "body": e["body"],
+                    "message_id": e["message_id"],
+                    "references": e["references"],
                     "thread_history": e["thread_history"],
                     "is_auto_reply": e["is_auto_reply"],
                     "should_reply": False,
