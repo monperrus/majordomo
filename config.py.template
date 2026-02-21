@@ -1,0 +1,35 @@
+"""
+Configuration for the autonomous email agent.
+Copy this to config.py and fill in your values.
+Or set environment variables and load with python-dotenv.
+"""
+
+import os
+
+
+class Config:
+    # Email credentials for the dedicated inbox
+    EMAIL_ADDRESS   = os.getenv("EMAIL_ADDRESS", "agent@yourdomain.com")
+    EMAIL_PASSWORD  = os.getenv("EMAIL_PASSWORD", "your-password")
+
+    # IMAP (incoming)
+    IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
+    IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+
+    # SMTP (outgoing)
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+
+    # LLM
+    ANTHROPIC_AUTH_TOKEN  = os.getenv("ANTHROPIC_AUTH_TOKEN", "your-auth-token")
+    ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://your-proxy.example.com")
+
+    # Agent identity
+    AGENT_NAME    = os.getenv("AGENT_NAME", "Alex")
+    AGENT_PERSONA = os.getenv(
+        "AGENT_PERSONA",
+        "You are a professional email assistant for Acme Corp, answering customer questions about products and support. Be helpful, concise, and friendly."
+    )
+
+    # How often to check for new emails (seconds)
+    POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
